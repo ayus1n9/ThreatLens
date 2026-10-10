@@ -16,6 +16,7 @@ from typing import List, Optional
 from soc_intel import __version__
 from soc_intel.config import load_config
 from soc_intel.enrichment import EnrichmentEngine
+from soc_intel.notifications import NotificationDispatcher
 from soc_intel.reporting import ReportGenerator
 from soc_intel.validators import (
     ValidatedIndicator,
@@ -59,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  soc-intel enrich --hash e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
             "  soc-intel enrich --input samples/indicators.txt --format json --output report.json\n"
             "  soc-intel enrich --input samples/indicators.txt --format csv --output report.csv\n"
+            "  soc-intel enrich --input samples/indicators.txt --notify --webhook-dry-run\n"
         ),
     )
 
@@ -265,6 +267,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.output:
                 ReportGenerator.to_json(results, output_path=args.output)
                 print(f"\n[+] Report exported to: {args.output}")
+
+        # Webhook Notification handling
+        if args.notify or args.webhook_dry_run:
+            dispatcher = NotificationDispatcher(webhook_url=config.alert_webhook_url)
+            dispatcher.send(results, dry_run=args.webhook_dry_run)
 
         return 0
 
