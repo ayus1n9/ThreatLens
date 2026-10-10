@@ -2,8 +2,8 @@
 Enrichment Orchestration & Router Module.
 
 Routes indicators to eligible provider clients based on IOC type (e.g., hashes only to VT,
-IPs to VT + AbuseIPDB), normalizes provider findings, and aggregates multi-source evidence
-with resilience against partial failures.
+IPs to VT + AbuseIPDB), normalizes provider findings, and applies the AssessmentEngine
+to generate automated risk prioritization.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from soc_intel.assessment import AssessmentEngine
 from soc_intel.config import Settings
 from soc_intel.models import (
     EnrichedIndicator,
@@ -40,7 +41,7 @@ class IndicatorRouter:
 class EnrichmentEngine:
     """
     Coordinates threat intelligence lookups across multiple providers,
-    normalizes records, and aggregates partial intelligence without failing.
+    normalizes records, aggregates partial intelligence, and evaluates risk.
     """
 
     def __init__(self, settings: Settings, providers: Optional[List[BaseProvider]] = None):
@@ -48,7 +49,6 @@ class EnrichmentEngine:
         if providers is not None:
             self.providers = providers
         else:
-            # Default production provider set
             self.providers = [
                 VirusTotalClient(
                     api_key=settings.virustotal_api_key,
@@ -79,7 +79,8 @@ class EnrichmentEngine:
 
     def enrich_indicator(self, indicator: ValidatedIndicator) -> EnrichedIndicator:
         """
-        Execute lookups across all eligible providers for an indicator and normalize results.
+        Execute lookups across all eligible providers, normalize results,
+        and run the assessment engine.
         """
         norm_ind = NormalizedIndicator(
             value=indicator.normalized_value,
@@ -91,11 +92,13 @@ class EnrichmentEngine:
         eligible_providers = self.router.get_providers_for(indicator)
 
         if not eligible_providers:
-            return EnrichedIndicator(
+            enriched_obj = EnrichedIndicator(
                 indicator=norm_ind,
                 enrichment_status=OverallEnrichmentStatus.SKIPPED,
                 provider_records=[],
             )
+            enriched_obj.assessment = AssessmentEngine.evaluate(enriched_obj)
+            return enriched_obj
 
         provider_records: List[ProviderEnrichmentRecord] = []
         success_count = 0
@@ -137,8 +140,12 @@ class EnrichmentEngine:
         else:
             overall_status = OverallEnrichmentStatus.FAILED
 
-        return EnrichedIndicator(
+        enriched_obj = EnrichedIndicator(
             indicator=norm_ind,
             enrichment_status=overall_status,
             provider_records=provider_records,
         )
+
+        # Run multi-factor risk assessment
+        enriched_obj.assessment = AssessmentEngine.evaluate(enriched_obj)
+        return enriched_obj
