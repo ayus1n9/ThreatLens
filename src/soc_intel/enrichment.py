@@ -1,9 +1,9 @@
 """
 Enrichment Orchestration & Router Module.
 
-Routes indicators to eligible provider clients based on IOC type (e.g., hashes only to VT,
-IPs to VT + AbuseIPDB), normalizes provider findings, and applies the AssessmentEngine
-to generate automated risk prioritization.
+Routes indicators to eligible provider clients based on IOC type, handles local caching
+via ThreatIntelCache, aggregates partial intelligence without failure, and applies
+the AssessmentEngine to generate automated risk prioritization.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import logging
 from typing import List, Optional
 
 from soc_intel.assessment import AssessmentEngine
+from soc_intel.cache import ThreatIntelCache
 from soc_intel.config import Settings
 from soc_intel.models import (
     EnrichedIndicator,
@@ -41,10 +42,15 @@ class IndicatorRouter:
 class EnrichmentEngine:
     """
     Coordinates threat intelligence lookups across multiple providers,
-    normalizes records, aggregates partial intelligence, and evaluates risk.
+    consults local cache, aggregates partial intelligence, and evaluates risk.
     """
 
-    def __init__(self, settings: Settings, providers: Optional[List[BaseProvider]] = None):
+    def __init__(
+        self,
+        settings: Settings,
+        providers: Optional[List[BaseProvider]] = None,
+        cache: Optional[ThreatIntelCache] = None,
+    ):
         self.settings = settings
         if providers is not None:
             self.providers = providers
@@ -60,6 +66,11 @@ class EnrichmentEngine:
                 ),
             ]
         self.router = IndicatorRouter(self.providers)
+        self.cache = cache if cache is not None else ThreatIntelCache(
+            db_path=settings.cache_db_path,
+            ttl_hours=settings.cache_ttl_hours,
+            enabled=settings.cache_enabled,
+        )
 
     def normalize_provider_result(self, raw: ProviderRawResult, is_cached: bool = False) -> ProviderEnrichmentRecord:
         """Translate raw provider container to normalized Pydantic model."""
@@ -77,10 +88,9 @@ class EnrichmentEngine:
             is_cached=is_cached,
         )
 
-    def enrich_indicator(self, indicator: ValidatedIndicator) -> EnrichedIndicator:
+    def enrich_indicator(self, indicator: ValidatedIndicator, bypass_cache: bool = False) -> EnrichedIndicator:
         """
-        Execute lookups across all eligible providers, normalize results,
-        and run the assessment engine.
+        Execute lookups across all eligible providers, checking and populating cache.
         """
         norm_ind = NormalizedIndicator(
             value=indicator.normalized_value,
@@ -106,9 +116,27 @@ class EnrichmentEngine:
         unconfigured_count = 0
 
         for provider in eligible_providers:
+            # 1. Check Cache if not bypassed
+            cached_result: Optional[ProviderRawResult] = None
+            if not bypass_cache and self.cache:
+                cached_result = self.cache.get(
+                    provider.name, indicator.indicator_type, indicator.normalized_value
+                )
+
+            if cached_result:
+                rec = self.normalize_provider_result(cached_result, is_cached=True)
+                provider_records.append(rec)
+                success_count += 1
+                continue
+
+            # 2. Perform fresh live lookup
             try:
                 raw_res = provider.lookup(indicator)
-                rec = self.normalize_provider_result(raw_res)
+                # Store in cache if successful
+                if self.cache and not bypass_cache and raw_res.status in (ProviderStatus.SUCCESS, ProviderStatus.NOT_FOUND):
+                    self.cache.set(raw_res)
+
+                rec = self.normalize_provider_result(raw_res, is_cached=False)
                 provider_records.append(rec)
 
                 if rec.status in (ProviderStatus.SUCCESS, ProviderStatus.NOT_FOUND):
@@ -125,11 +153,11 @@ class EnrichmentEngine:
                         provider_name=provider.name,
                         status=ProviderStatus.ERROR,
                         error_message=f"Internal exception: {str(exc)}",
+                        is_cached=False,
                     )
                 )
                 error_count += 1
 
-        # Determine overall enrichment status
         total_eligible = len(eligible_providers)
         if unconfigured_count == total_eligible:
             overall_status = OverallEnrichmentStatus.UNCONFIGURED
@@ -149,3 +177,10 @@ class EnrichmentEngine:
         # Run multi-factor risk assessment
         enriched_obj.assessment = AssessmentEngine.evaluate(enriched_obj)
         return enriched_obj
+
+    def enrich_batch(self, indicators: List[ValidatedIndicator], bypass_cache: bool = False) -> List[EnrichedIndicator]:
+        """Process a list of indicators sequentially."""
+        results: List[EnrichedIndicator] = []
+        for ind in indicators:
+            results.append(self.enrich_indicator(ind, bypass_cache=bypass_cache))
+        return results

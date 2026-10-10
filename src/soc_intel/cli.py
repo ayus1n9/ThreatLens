@@ -15,6 +15,8 @@ from typing import List, Optional
 
 from soc_intel import __version__
 from soc_intel.config import load_config
+from soc_intel.enrichment import EnrichmentEngine
+from soc_intel.reporting import ReportGenerator
 from soc_intel.validators import (
     ValidatedIndicator,
     parse_indicator_file,
@@ -226,15 +228,44 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("[-] No valid indicators to enrich.")
             return 1
 
-        print(f"\n[+] ThreatLens Initialized (Day 1 Foundation Baseline)")
-        print(f"    Target Indicators: {len(indicators)}")
-        print(f"    VirusTotal Key Configured: {config.has_virustotal}")
-        print(f"    AbuseIPDB Key Configured:  {config.has_abuseipdb}")
-        print(f"    Alert Webhook Configured:  {config.has_webhook}")
-        print("\n[*] Notice: Full provider enrichment and assessment pipeline will be active on Day 2 & Day 3.")
-        print("    Validated Indicator Targets:")
-        for idx, ind in enumerate(indicators, 1):
-            print(f"    [{idx}] {ind.indicator_type.value.upper()}: {ind.normalized_value} ({ind.scope_note})")
+        engine = EnrichmentEngine(settings=config)
+        results = engine.enrich_batch(indicators, bypass_cache=args.no_cache)
+
+        # Output formatting
+        if args.format == "json":
+            output_content = ReportGenerator.to_json(results, output_path=args.output)
+            if not args.output:
+                print(output_content)
+            else:
+                print(f"[+] JSON report saved to: {args.output}")
+
+        elif args.format == "csv":
+            output_content = ReportGenerator.to_csv(results, output_path=args.output)
+            if not args.output:
+                print(output_content)
+            else:
+                print(f"[+] CSV report saved to: {args.output}")
+
+        else:
+            # Terminal output
+            for res in results:
+                status_symbol = "[!]" if res.assessment.priority.value == "high" else "[*]" if res.assessment.priority.value == "medium" else "[-]"
+                print(f"\n{status_symbol} Indicator: {res.indicator.value} ({res.indicator.indicator_type.value.upper()})")
+                print(f"    Status     : {res.enrichment_status.value} (Coverage: {len(res.successful_providers)}/{len(res.provider_records)} providers)")
+                print(f"    Priority   : {res.assessment.priority.value.upper()} (Confidence: {res.assessment.confidence.value})")
+                print(f"    Summary    : {res.assessment.summary}")
+                print(f"    Action     : {res.assessment.recommended_action}")
+                if res.assessment.caveats:
+                    for c in res.assessment.caveats:
+                        print(f"    Caveat     : {c}")
+
+            # Print batch execution summary
+            print(ReportGenerator.format_terminal_summary(results))
+
+            if args.output:
+                ReportGenerator.to_json(results, output_path=args.output)
+                print(f"\n[+] Report exported to: {args.output}")
+
         return 0
 
     return 0

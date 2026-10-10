@@ -55,9 +55,17 @@ class TestCLIOperations:
         assert "Validation Complete: 1 valid indicator(s)" in captured.out
         assert "[MD5] 44d88612fea8a8f36de82e1278abb02f" in captured.out
 
-    def test_cli_enrich_day1_baseline(self, capsys):
+    def test_cli_enrich_terminal_flow(self, capsys):
         code = main(["enrich", "--ip", "8.8.8.8"])
         assert code == 0
         captured = capsys.readouterr()
-        assert "ThreatLens Initialized (Day 1 Foundation Baseline)" in captured.out
-        assert "Target Indicators: 1" in captured.out
+        assert "Indicator: 8.8.8.8" in captured.out
+        assert "THREATLENS SOC TRIAGE BATCH SUMMARY" in captured.out
+
+    def test_cli_enrich_json_output(self, capsys, tmp_path: Path):
+        report_file = tmp_path / "report.json"
+        code = main(["enrich", "--ip", "1.1.1.1", "--format", "json", "--output", str(report_file)])
+        assert code == 0
+        assert report_file.exists()
+        content = report_file.read_text()
+        assert "1.1.1.1" in content
