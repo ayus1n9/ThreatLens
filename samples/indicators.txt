@@ -1,0 +1,21 @@
+# ThreatLens Sample Indicator Ingestion File
+# Comments and empty lines are automatically skipped.
+
+# Public IPv4 Indicators
+8.8.8.8
+1.1.1.1
+93.184.216.34
+
+# Public IPv6 Indicators
+2606:4700:4700::1111
+
+# Cryptographic File Hashes
+# MD5 (32 hex)
+44d88612fea8a8f36de82e1278abb02f
+# SHA-1 (40 hex)
+2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+# SHA-256 (64 hex)
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+# Duplicate of previous indicator (should be cleanly deduplicated)
+8.8.8.8
