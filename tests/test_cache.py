@@ -79,3 +79,28 @@ class TestThreatIntelCache:
         assert temp_cache.get("AbuseIPDB", IndicatorType.IPV4, "1.1.1.1") is not None
         temp_cache.clear()
         assert temp_cache.get("AbuseIPDB", IndicatorType.IPV4, "1.1.1.1") is None
+
+    def test_corrupted_json_in_cache_handled_gracefully(self, tmp_path: Path):
+        db_file = tmp_path / "corrupted.db"
+        cache = ThreatIntelCache(db_path=str(db_file), ttl_hours=24, enabled=True)
+        # Directly insert invalid JSON in the raw_data and tags column
+        with sqlite3.connect(db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO intel_cache (
+                    cache_key, provider_name, indicator_value, indicator_type,
+                    status, http_status_code, detections, total_evaluators,
+                    reputation_score, tags, last_analysis_date, cached_at, raw_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "virustotal:ipv4:8.8.8.8", "VirusTotal", "8.8.8.8", "ipv4",
+                    "success", 200, 0, 70, 0.0, "NOT_VALID_JSON{", None, "2026-10-10T00:00:00+00:00", "{INVALID_JSON"
+                )
+            )
+            conn.commit()
+
+        # Should handle gracefully as a cache miss instead of raising json.JSONDecodeError
+        result = cache.get("VirusTotal", IndicatorType.IPV4, "8.8.8.8")
+        assert result is None

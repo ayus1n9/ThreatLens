@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Testing](https://img.shields.io/badge/tests-86%20passed-brightgreen.svg)](https://docs.pytest.org/)
+[![Testing](https://img.shields.io/badge/tests-87%20passed-brightgreen.svg)](https://docs.pytest.org/)
 [![Security](https://img.shields.io/badge/zero--leakage-RFC1918--protected-blueviolet.svg)](docs/security.md)
 
 **ThreatLens** is an automated threat intelligence enrichment tool built in Python. It ingests suspicious Indicators of Compromise (IOCs)—including IPv4, IPv6, and cryptographic file hashes (MD5, SHA-1, SHA-256)—enriches them using **VirusTotal** and **AbuseIPDB**, normalizes multi-source evidence, and generates transparent, audit-ready triage assessments for Security Operations Center (SOC) analysts.
