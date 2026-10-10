@@ -96,7 +96,7 @@ class TestFileParsingAndDeduplication:
     """Test batch file parsing, deduplication, and error resiliency."""
 
     def test_private_ip_rejection_by_default(self):
-        with pytest.raises(ValueError, match="internal/non-routable IP"):
+        with pytest.raises(ValueError, match="non-routable/special-purpose IP"):
             validate_single_indicator("10.0.0.1", allow_private=False)
 
     def test_private_ip_allowed_explicitly(self):

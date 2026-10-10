@@ -2,7 +2,7 @@
 Command Line Interface (CLI) for ThreatLens.
 
 Provides intuitive analyst subcommands, arguments, flag parsing,
-and diagnostic controls.
+diagnostic controls, and deterministic exit codes for CI/CD automation.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from soc_intel import __version__
 from soc_intel.config import load_config
@@ -142,7 +142,7 @@ def _add_indicator_input_args(subparser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--allow-private-ips",
         action="store_true",
-        help="Explicitly permit RFC1918 / loopback / reserved IPs (disabled by default to prevent leakage).",
+        help="Explicitly permit non-routable / private / reserved IPs (disabled by default to prevent leakage).",
     )
 
 
@@ -167,8 +167,11 @@ def _add_common_options(subparser: argparse.ArgumentParser) -> None:
     )
 
 
-def collect_indicators_from_args(args: argparse.Namespace) -> List[ValidatedIndicator]:
-    """Extract and validate all indicators requested via CLI arguments."""
+def collect_indicators_from_args(args: argparse.Namespace) -> Tuple[List[ValidatedIndicator], List[str]]:
+    """
+    Extract and validate all indicators requested via CLI arguments.
+    Returns (valid_indicators, rejection_errors).
+    """
     indicators: List[ValidatedIndicator] = []
     errors: List[str] = []
 
@@ -198,37 +201,56 @@ def collect_indicators_from_args(args: argparse.Namespace) -> List[ValidatedIndi
         logger.error("No indicator specified. Use --ip, --hash, or --input.")
         sys.exit(2)
 
-    if errors:
-        for err in errors:
-            logger.warning("Rejected / skipped: %s", err)
-
-    return indicators
+    return indicators, errors
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Main CLI entrypoint."""
+    """
+    Main CLI entrypoint.
+    Returns exit code:
+      0: All operations succeeded completely.
+      1: Partial failure (some indicators rejected, or notification transmission failed).
+      2: Fatal error (no inputs, file not found, bad configuration).
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if not args.command:
         parser.print_help()
-        return 1
+        return 2
 
     configure_logging(verbose=args.verbose, quiet=args.quiet)
-    config = load_config(args.env_file)
+
+    try:
+        config = load_config(args.env_file)
+    except (FileNotFoundError, ValueError) as cfg_err:
+        logger.error("Configuration error: %s", cfg_err)
+        print(f"[-] Configuration error: {cfg_err}", file=sys.stderr)
+        return 2
+
+    indicators, errors = collect_indicators_from_args(args)
+
+    if errors:
+        for err in errors:
+            logger.warning("Rejected / skipped: %s", err)
+            print(f"[-] Rejected: {err}", file=sys.stderr)
 
     if args.command == "validate":
-        indicators = collect_indicators_from_args(args)
+        if not indicators:
+            print("[-] No valid indicators found.", file=sys.stderr)
+            return 2
+
         print(f"\n[+] Validation Complete: {len(indicators)} valid indicator(s) identified.")
         for idx, ind in enumerate(indicators, 1):
             print(f"  {idx}. [{ind.indicator_type.value.upper()}] {ind.normalized_value} ({ind.scope_note})")
-        return 0
+
+        # Return 1 if partial items rejected, 0 if completely clean
+        return 1 if errors else 0
 
     elif args.command == "enrich":
-        indicators = collect_indicators_from_args(args)
         if not indicators:
-            print("[-] No valid indicators to enrich.")
-            return 1
+            print("[-] No valid indicators to enrich.", file=sys.stderr)
+            return 2
 
         engine = EnrichmentEngine(settings=config)
         results = engine.enrich_batch(indicators, bypass_cache=args.no_cache)
@@ -249,7 +271,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"[+] CSV report saved to: {args.output}")
 
         else:
-            # Terminal output
             for res in results:
                 status_symbol = "[!]" if res.assessment.priority.value == "high" else "[*]" if res.assessment.priority.value == "medium" else "[-]"
                 print(f"\n{status_symbol} Indicator: {res.indicator.value} ({res.indicator.indicator_type.value.upper()})")
@@ -261,7 +282,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                     for c in res.assessment.caveats:
                         print(f"    Caveat     : {c}")
 
-            # Print batch execution summary
             print(ReportGenerator.format_terminal_summary(results))
 
             if args.output:
@@ -269,11 +289,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"\n[+] Report exported to: {args.output}")
 
         # Webhook Notification handling
+        notification_failed = False
         if args.notify or args.webhook_dry_run:
             dispatcher = NotificationDispatcher(webhook_url=config.alert_webhook_url)
-            dispatcher.send(results, dry_run=args.webhook_dry_run)
+            sent = dispatcher.send(results, dry_run=args.webhook_dry_run)
+            if not sent:
+                notification_failed = True
+                print("[-] Webhook notification delivery failed or URL unconfigured.", file=sys.stderr)
 
-        return 0
+        # Return 1 if any indicator was rejected or notification failed
+        return 1 if (errors or notification_failed) else 0
 
     return 0
 
